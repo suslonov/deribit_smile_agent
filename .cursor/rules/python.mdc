@@ -1,0 +1,27 @@
+---
+alwaysApply: true
+---
+- Use type hints for all function signatures. Prefer Pydantic models over raw dictionaries for input validation.
+- For single-line statements in conditionals, omit curly braces.
+- Use concise, one-line syntax for simple conditional statements (e.g., if condition: do_something()).
+- Write comments only in complex logic. No need to comment every line of code, no need to comment all entities.
+- Put import statements at the beginning of the module. Never put them inside a loop
+- Do not use "return" in main(), if not needed for the design, use exit()
+- Never hardcode default values for settings, app should fail for incorrect settings
+
+- Prioritize error handling and edge cases:
+  - Handle errors and edge cases at the beginning of functions.
+  - Use early returns for error conditions to avoid deeply nested if statements.
+  - Place the happy path last in the function for improved readability.
+  - Avoid unnecessary else statements; use the if-return pattern instead.
+  - Use guard clauses to handle preconditions and invalid states early.
+  - Implement proper error logging and user-friendly error messages.
+  - Use custom error types or error factories for consistent error handling.
+
+Performance Optimization
+
+- Avoid global scope variables, implement/use global application state, set its initialization logic in one place
+- Use functional components (plain functions) and Pydantic models for input validation and response schemas.
+- Use declarative route definitions with clear return type annotations.
+- Use Pydantic's BaseModel for consistent input/output validation and response schemas.
+- Optimize data serialization and deserialization with Pydantic.

@@ -1,0 +1,16 @@
+# Core data stack
+pandas
+numpy
+pyarrow
+scikit-learn
+pyyaml
+typer
+rich
+pydantic
+jinja2
+httpx
+websockets
+pytest
+black
+ruff
+mypy

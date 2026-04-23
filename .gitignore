@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+artifacts/
+reports/
+data/
+.parquet
+.ipynb_checkpoints/
+.DS_Store
+
