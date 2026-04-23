@@ -1,0 +1,75 @@
+# Live paper trading mode
+# Usage: python -m app.main run-live-paper --config configs/live_paper.yaml
+
+data:
+  # In live mode the data path is not used; market data comes from WebSocket
+  path: /mnt/Data/archive/raw_data
+  assets:
+    - BTC
+    - ETH
+  cache_dir: /mnt/Data/.cache/data
+
+live:
+  # Deribit WebSocket URL
+  ws_url: wss://www.deribit.com/ws/api/v2
+  # Channels to subscribe (will be built dynamically for active instruments)
+  heartbeat_interval: 10
+  reconnect_delay: 5
+  # Buffer: accumulate N snapshots before generating a signal
+  snapshot_buffer: 3
+  # Only subscribe to expiries with DTE in this range
+  target_dte_min: 7
+  target_dte_max: 45
+
+paper:
+  # Paper trade output log
+  trades_log: reports/paper_trades.jsonl
+  max_concurrent_positions: 10
+
+calculator:
+  assets:
+    - BTC
+    - ETH
+  rv_window: 20
+  iv_rv_threshold: 0.05
+  min_oi: 10.0
+  min_strikes: 3
+  target_dte_min: 7
+  target_dte_max: 45
+  straddle_moneyness_tol: 0.02
+  smile_slope_threshold: 0.0
+
+sandbox:
+  timeout_seconds: 10
+  allowed_imports:
+    - __future__
+    - numpy
+    - pandas
+    - scipy
+    - math
+    - statistics
+    - itertools
+    - functools
+    - collections
+    - typing
+    - datetime
+    - re
+    - copy
+    - warnings
+  verify_determinism: false
+
+horizons:
+  - 1
+  - 3
+
+execution:
+  model: mid
+  slippage_bps: 0.0
+
+fees:
+  pct_of_underlying: 0.0003
+  max_pct_of_option: 0.125
+
+output:
+  reports_dir: reports
+  artifacts_dir: artifacts

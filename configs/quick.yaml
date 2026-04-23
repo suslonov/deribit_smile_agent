@@ -1,0 +1,88 @@
+# Quick research run: 30-day CPU slice
+# Usage: python -m app.main run-quick --config configs/quick.yaml
+
+data:
+  path: /mnt/Data/archive/raw_data
+  assets:
+    - BTC
+    - ETH
+  cache_dir: /mnt/Data/.cache/data
+  max_workers: 8
+  # 30-day window starting from this date (inclusive)
+  quick_start: "2025-01-01"
+  quick_days: 30
+  chunk_days: 1   # process data in 1-day windows to keep memory bounded
+
+splits:
+  test_days: 90
+  train_window_days: 20
+  val_window_days: 7
+  gap_days: 1
+  step_days: 7
+
+horizons:
+  - 1
+  - 3
+
+strategies:
+  - straddle
+  - vertical_spread
+
+execution:
+  model: mid
+  slippage_bps: 0.0
+
+fees:
+  pct_of_underlying: 0.0003   # 0.03%
+  max_pct_of_option: 0.125    # 12.5%
+
+calculator:
+  assets:
+    - BTC
+    - ETH
+  rv_window: 20
+  iv_rv_threshold: 0.05
+  min_oi: 10.0
+  min_strikes: 3
+  target_dte_min: 7
+  target_dte_max: 45
+  straddle_moneyness_tol: 0.02
+  smile_slope_threshold: 0.0
+
+sandbox:
+  timeout_seconds: 60
+  allowed_imports:
+    - __future__
+    - numpy
+    - pandas
+    - scipy
+    - math
+    - statistics
+    - itertools
+    - functools
+    - collections
+    - typing
+    - datetime
+    - re
+    - copy
+    - warnings
+  verify_determinism: true
+
+optimization:
+  search_space: {}   # empty = no grid search for quick run
+
+promotion:
+  objective: sharpe
+  max_nan_rate_delta: 0.10
+  max_drawdown_pct_delta: 0.20
+
+llm:
+  provider: anthropic
+  model: claude-opus-4-5
+  max_tokens: 8192
+  temperature: 0.2
+  api_key_env: ANTHROPIC_API_KEY
+
+output:
+  reports_dir: reports
+  artifacts_dir: artifacts

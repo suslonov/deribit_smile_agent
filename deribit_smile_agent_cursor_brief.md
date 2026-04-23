@@ -127,15 +127,16 @@ deribit_smile_agent/
 
 ### 1. Read historical data from a folder
 
-The app must accept a folder path that contains minute-level Deribit historical data. I will provide the folder link/path later.
+The app must accept a folder path that contains minute-level Deribit historical data.
+It is in /mnt/Data/archive/raw_data (caution - a lot of files in daily folders)
 
 Implement a loader that:
 - recursively scans the folder,
 - detects supported file types,
-- reads raw files into pandas,
+- reads only the files needed for the requested time range and instruments into pandas,
 - normalizes timestamps,
 - parses instrument metadata,
-- and writes normalized parquet caches.
+- and returns a normalized in-memory DataFrame ready for downstream calculations.
 
 The system must support at minimum:
 - options data,
@@ -216,26 +217,12 @@ Only this module may be rewritten by the agent:
 
 It must expose exactly this API:
 
-```python
-def build_features(options_df, underlying_df, config) -> "pd.DataFrame":
-    ...
 
-def generate_signals(features_df, config) -> "pd.DataFrame":
-    ...
+The sandbox runs **in-process** with minimal guardrails:
+- a timeout to prevent infinite loops,
+- inputs passed as read-only copies so the calculator cannot mutate upstream data.
 
-def describe_params() -> dict:
-    ...
-```
-
-The sandbox must run **out of process** using a subprocess wrapper with:
-- no network access,
-- CPU and memory limits,
-- timeout,
-- read-only inputs,
-- temporary output directory,
-- strict import allowlist.
-
-Do **not** rely on `RestrictedPython` as the only security layer. Its own documentation states it is not a secure sandbox. Use process isolation instead. citeturn13search0turn13search1
+The goal is simply to prevent LLM-generated code from accidentally corrupting shared state or hanging the process — no subprocess isolation required.
 
 ---
 

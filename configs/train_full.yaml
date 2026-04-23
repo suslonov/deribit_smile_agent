@@ -1,0 +1,91 @@
+# Full training run with walk-forward validation
+# Usage: python -m app.main run-train --config configs/train_full.yaml
+
+data:
+  path: /mnt/Data/archive/raw_data
+  assets:
+    - BTC
+    - ETH
+  cache_dir: /mnt/Data/.cache/data
+  max_workers: 8
+  # Use all available data; test set is last 90 days
+  start_date: "2023-01-01"
+  end_date: null   # null = use all available data up to today
+
+splits:
+  test_days: 90
+  train_window_days: 60
+  val_window_days: 14
+  gap_days: 3
+  step_days: 14
+
+horizons:
+  - 1
+  - 3
+
+strategies:
+  - straddle
+  - vertical_spread
+
+execution:
+  model: mid
+  slippage_bps: 0.0
+
+fees:
+  pct_of_underlying: 0.0003
+  max_pct_of_option: 0.125
+
+calculator:
+  assets:
+    - BTC
+    - ETH
+  rv_window: 20
+  iv_rv_threshold: 0.05
+  min_oi: 10.0
+  min_strikes: 3
+  target_dte_min: 7
+  target_dte_max: 45
+  straddle_moneyness_tol: 0.02
+  smile_slope_threshold: 0.0
+
+sandbox:
+  timeout_seconds: 120
+  allowed_imports:
+    - __future__
+    - numpy
+    - pandas
+    - scipy
+    - math
+    - statistics
+    - itertools
+    - functools
+    - collections
+    - typing
+    - datetime
+    - re
+    - copy
+    - warnings
+  verify_determinism: true
+
+optimization:
+  search_space:
+    iv_rv_threshold: [0.03, 0.05, 0.08, 0.10]
+    target_dte_min: [7, 14]
+    target_dte_max: [30, 45, 60]
+    smile_slope_threshold: [0.0, 0.005, 0.01]
+
+promotion:
+  objective: sharpe
+  max_nan_rate_delta: 0.05
+  max_drawdown_pct_delta: 0.10
+
+llm:
+  provider: anthropic
+  model: claude-opus-4-5
+  max_tokens: 8192
+  temperature: 0.2
+  api_key_env: ANTHROPIC_API_KEY
+
+output:
+  reports_dir: reports
+  artifacts_dir: artifacts
