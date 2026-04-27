@@ -4,7 +4,6 @@ numpy
 pyarrow
 scikit-learn
 pyyaml
-typer
 rich
 pydantic
 jinja2

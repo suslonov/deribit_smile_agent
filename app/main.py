@@ -1,5 +1,9 @@
 """CLI entry point for the Deribit Smile Research Agent.
 
+If the first user argument is not a known subcommand, ``run-quick`` is inserted
+into ``sys.argv`` (after the program name) so parsing matches an explicit
+``run-quick`` invocation.
+
 Commands:
     run-quick       30-day CPU research run.
     run-train       Full walk-forward training study.
@@ -8,21 +12,21 @@ Commands:
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import sys
-from datetime import date, datetime, timedelta, timezone
+import os
+from datetime import date, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pandas as pd
-import typer
 from rich.console import Console
 from rich.table import Table
 
 from app.data.loader import load_date_range
 from app.llm.artifact_log import build_artifact, save_artifact
-from app.llm.critic import evaluate_candidate, metric_gate
+from app.llm.critic import evaluate_candidate
 from app.llm.prompts import render_rewrite_prompt
 from app.llm.proposer import LLMProposer
 from app.opt.search import walk_forward_search
@@ -30,17 +34,12 @@ from app.sim.metrics import compute_metrics
 from app.sim.pipeline import run_pipeline
 from app.sim.pricing import ExecConfig, FeeConfig
 from app.sim.simulator import run_simulation
-from app.split.time_split import get_test_data, make_splits, quick_split
+from app.split.time_split import get_test_data, make_splits
 from app.utils.clock import utc_now_str
-from app.utils.hashing import hash_dict, hash_file
-from app.utils.io import load_yaml, save_json
+from app.utils.hashing import hash_dict
+from app.utils.io import load_yaml
 from sandbox.runner import SandboxRunner
 
-app = typer.Typer(
-    name="deribit-smile-agent",
-    help="Deribit Volatility Smile Research Agent",
-    add_completion=False,
-)
 console = Console()
 
 logging.basicConfig(
@@ -91,15 +90,16 @@ def _print_metrics(metrics: dict) -> None:
     console.print(table)
 
 
-@app.command("run-quick")
-def run_quick(
-    config_path: str = typer.Option("configs/quick.yaml", "--config", "-c"),
-    llm: bool = typer.Option(False, "--llm", help="Run LLM proposer after simulation"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Skip LLM call"),
-) -> None:
+def run_quick(args) -> None:
+    config_path = args.config
+    llm = args.llm
+    dry_run = args.dry_run
     """Quick 30-day research run on CPU."""
     config = load_yaml(config_path)
     config_hash = hash_dict(config)
+    if not os.path.exists(config["data"]["path"]):
+        config["data"]["path"] = config["data"]["path"].replace("mnt", "media")
+        config["data"]["cache_dir"] = config["data"]["cache_dir"].replace("mnt", "media")
     run_id = f"quick_{utc_now_str()}"
 
     data_cfg = config["data"]
@@ -172,15 +172,17 @@ def run_quick(
                       horizons, dry_run, run_id)
 
 
-@app.command("run-train")
-def run_train(
-    config_path: str = typer.Option("configs/train_full.yaml", "--config", "-c"),
-    llm: bool = typer.Option(False, "--llm"),
-    dry_run: bool = typer.Option(False, "--dry-run"),
-) -> None:
+def run_train(args) -> None:
     """Full walk-forward training study."""
+    config_path = args.config
+    llm = args.llm
+    dry_run = args.dry_run
+
     config = load_yaml(config_path)
     config_hash = hash_dict(config)
+    if not os.path.exists(config["data"]["path"]):
+        config["data"]["path"] = config["data"]["path"].replace("mnt", "media")
+        config["data"]["cache_dir"] = config["data"]["cache_dir"].replace("mnt", "media")
     run_id = f"train_{utc_now_str()}"
 
     data_cfg = config["data"]
@@ -268,13 +270,14 @@ def run_train(
                       horizons, dry_run, run_id)
 
 
-@app.command("run-test")
-def run_test(
-    config_path: str = typer.Option("configs/train_full.yaml", "--config", "-c"),
-) -> None:
+def run_test(args) -> None:
     """Run the final test on the held-out test set (run once, never iterate)."""
+    config_path = args.config
     config = load_yaml(config_path)
     config_hash = hash_dict(config)
+    if not os.path.exists(config["data"]["path"]):
+        config["data"]["path"] = config["data"]["path"].replace("mnt", "media")
+        config["data"]["cache_dir"] = config["data"]["cache_dir"].replace("mnt", "media")
     run_id = f"test_{utc_now_str()}"
 
     data_cfg = config["data"]
@@ -284,7 +287,7 @@ def run_test(
     start = date.fromisoformat(start_str) if start_str else date(2023, 1, 1)
     end = date.fromisoformat(end_str) if end_str else date.today()
 
-    console.print(f"[bold]FINAL TEST RUN[/bold] — results will NOT be used for training")
+    console.print("[bold]FINAL TEST RUN[/bold] — results will NOT be used for training")
 
     options_df = load_date_range(
         root=data_cfg["path"],
@@ -334,12 +337,13 @@ def run_test(
     console.print(f"[green]Final test artifact saved:[/green] {out_path}")
 
 
-@app.command("run-live-paper")
-def run_live_paper(
-    config_path: str = typer.Option("configs/live_paper.yaml", "--config", "-c"),
-) -> None:
+def run_live_paper(args) -> None:
     """Start live paper trading via Deribit WebSocket."""
+    config_path = args.config
     config = load_yaml(config_path)
+    if not os.path.exists(config["data"]["path"]):
+        config["data"]["path"] = config["data"]["path"].replace("mnt", "media")
+        config["data"]["cache_dir"] = config["data"]["cache_dir"].replace("mnt", "media")
 
     runner = _build_runner(config)
     runner.reload()
@@ -364,7 +368,7 @@ def _run_llm_loop(
     artifact: dict,
     config: dict,
     runner: SandboxRunner,
-    options_df: "pd.DataFrame",
+    options_df: pd.DataFrame,
     exec_cfg: ExecConfig,
     fee_cfg: FeeConfig,
     horizons: list[int],
@@ -403,5 +407,73 @@ def _run_llm_loop(
     console.print("[yellow]Metric gate: run manually or extend LLM loop to auto-accept[/yellow]")
 
 
+_KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
+    ("run-quick", "run-train", "run-test", "run-live-paper")
+)
+
+
+def _inject_default_run_quick(default_command) -> None:
+    argv = sys.argv
+    if len(argv) <= 1:
+        argv.insert(1, default_command)
+        return
+    first = argv[1]
+    if first in _KNOWN_SUBCOMMANDS:
+        return
+    if first in ("-h", "--help"):
+        return
+    argv.insert(1, default_command)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="deribit-smile-agent",
+        description="Deribit Volatility Smile Research Agent",
+    )
+    sub = parser.add_subparsers(
+        dest="command",
+        required=False,
+        metavar="COMMAND",
+        help="Action to run (omitted: run-quick).",
+    )
+    p_quick = sub.add_parser("run-quick", help="Quick 30-day research run on CPU.")
+    p_quick.add_argument(
+        "-c", "--config", default="configs/quick.yaml", help="Path to YAML config"
+    )
+    p_quick.add_argument(
+        "--llm", action="store_true", help="Run LLM proposer after simulation"
+    )
+    p_quick.add_argument("--dry-run", action="store_true", help="Skip LLM call")
+    p_train = sub.add_parser("run-train", help="Full walk-forward training study.")
+    p_train.add_argument(
+        "-c", "--config", default="configs/train_full.yaml", help="Path to YAML config"
+    )
+    p_train.add_argument("--llm", action="store_true")
+    p_train.add_argument("--dry-run", action="store_true")
+    p_test = sub.add_parser(
+        "run-test", help="Final test on held-out set using accepted sandbox"
+    )
+    p_test.add_argument(
+        "-c", "--config", default="configs/train_full.yaml", help="Path to YAML config"
+    )
+    p_live = sub.add_parser(
+        "run-live-paper", help="Live paper trading via Deribit WebSocket"
+    )
+    p_live.add_argument(
+        "-c", "--config", default="configs/live_paper.yaml", help="Path to YAML config"
+    )
+    _inject_default_run_quick("run-quick")
+    args = parser.parse_args()
+    if args.command == "run-quick":
+        run_quick(args)
+    elif args.command == "run-train":
+        run_train(args)
+    elif args.command == "run-test":
+        run_test(args)
+    elif args.command == "run-live-paper":
+        run_live_paper(args)
+    exit(0)
+
+
 if __name__ == "__main__":
-    app()
+    main()
