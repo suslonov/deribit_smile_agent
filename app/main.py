@@ -21,12 +21,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
 
 from app.data.loader import load_date_range
 from app.llm.artifact_log import build_artifact, save_artifact
-from app.llm.critic import evaluate_candidate
+from app.llm.critic import evaluate_candidate, llm_budget_exceeded, llm_requests_made
 from app.llm.prompts import render_rewrite_prompt
 from app.llm.proposer import LLMProposer
 from app.opt.search import walk_forward_search
@@ -88,6 +89,62 @@ def _print_metrics(metrics: dict) -> None:
             val_str = str(v)
         table.add_row(k, val_str)
     console.print(table)
+
+
+def _print_pnl_chart(results: pd.DataFrame, title: str = "Cumulative PnL Chart") -> None:
+    if results.empty or "pnl" not in results.columns:
+        console.print("[yellow]PnL chart skipped: no simulation results.[/yellow]")
+        return
+
+    valid = results.loc[~results["is_nan"]] if "is_nan" in results.columns else results
+    if valid.empty:
+        console.print("[yellow]PnL chart skipped: no valid trades.[/yellow]")
+        return
+
+    time_col = "close_ts" if "close_ts" in valid.columns else "signal_ts"
+    if time_col not in valid.columns:
+        console.print("[yellow]PnL chart skipped: no time axis column.[/yellow]")
+        return
+
+    curve = (
+        valid[[time_col, "pnl"]]
+        .dropna(subset=[time_col, "pnl"])
+        .assign(**{time_col: lambda d: pd.to_datetime(d[time_col], utc=True)})
+        .sort_values(time_col)
+        .groupby(time_col, as_index=False)["pnl"]
+        .sum()
+    )
+    if curve.empty:
+        console.print("[yellow]PnL chart skipped: no plottable points.[/yellow]")
+        return
+
+    curve["cum_pnl"] = curve["pnl"].cumsum()
+
+    max_points = 64
+    if len(curve) > max_points:
+        idx = pd.Series(range(len(curve)))
+        keep = ((idx * (max_points - 1)) // (len(curve) - 1)).drop_duplicates().to_list()
+        curve = curve.iloc[keep].reset_index(drop=True)
+
+    min_y = float(curve["cum_pnl"].min())
+    max_y = float(curve["cum_pnl"].max())
+    span = max_y - min_y
+    if span == 0.0:
+        bars = "-" * len(curve)
+    else:
+        levels = " .:-=+*#%@"
+        bars_list: list[str] = []
+        for val in curve["cum_pnl"]:
+            norm = (float(val) - min_y) / span
+            level_idx = min(int(norm * (len(levels) - 1)), len(levels) - 1)
+            bars_list.append(levels[level_idx])
+        bars = "".join(bars_list)
+
+    start_ts = curve[time_col].iloc[0]
+    end_ts = curve[time_col].iloc[-1]
+    console.print(f"[bold]{title}[/bold]")
+    console.print(f"{start_ts.date()} |{bars}| {end_ts.date()}")
+    console.print(f"min={min_y:.4f} max={max_y:.4f} final={float(curve['cum_pnl'].iloc[-1]):.4f}")
 
 
 def run_quick(args) -> None:
@@ -217,6 +274,7 @@ def run_train(args) -> None:
     console.print(f"Created {len(folds)} folds, test cutoff: {test_cutoff.date()}")
 
     train_df, _ = get_test_data(options_df, test_cutoff)
+    del options_df
     runner = _build_runner(config)
     runner.reload()
     exec_cfg, fee_cfg = _build_pricing(config)
@@ -248,6 +306,7 @@ def run_train(args) -> None:
     agg_results = run_simulation(agg_signals, train_df, exec_cfg, fee_cfg, horizons)
     metrics = compute_metrics(agg_results)
     _print_metrics(metrics)
+    _print_pnl_chart(agg_results, title="Training Cumulative PnL")
 
     errors: list[str] = []
     artifact = build_artifact(
@@ -308,6 +367,7 @@ def run_test(args) -> None:
         step_days=int(split_cfg["step_days"]),
     )
     _, test_df = get_test_data(options_df, test_cutoff)
+    del options_df
     console.print(f"Test set: {test_cutoff.date()} → {test_df['timestamp'].max().date()}, {len(test_df):,} rows")
 
     runner = _build_runner(config)
@@ -376,15 +436,35 @@ def _run_llm_loop(
     run_id: str,
 ) -> None:
     """Send artifact to LLM, receive new calculator, validate, and optionally accept."""
+    if llm_budget_exceeded(config):
+        console.print(
+            "[yellow]LLM request limit reached "
+            f"({llm_requests_made(config)}/{config.get('llm', {}).get('max_llm_requests')}); "
+            "finishing training.[/yellow]"
+        )
+        return
+
     proposer = LLMProposer(config)
     prompt = render_rewrite_prompt(artifact)
 
     console.print("[bold]Calling LLM proposer...[/bold]")
-    new_source, new_calc_cfg = proposer.propose(prompt, dry_run=dry_run)
+    new_source, new_calc_cfg, full_text = proposer.propose(prompt, dry_run=dry_run)
 
     if new_source is None:
-        console.print("[yellow]LLM returned no new source (dry run or error)[/yellow]")
+        console.print(
+            "[yellow]LLM returned no new source "
+            "(dry run, budget exhausted, or error)[/yellow]"
+        )
         return
+
+    # _critic_result = evaluate_candidate(
+    #     candidate_source=artifact["sandbox_source"],
+    #     current_metrics=artifact["summary_metrics"],
+    #     options_slice=options_df.head(5000),
+    #     config=config,
+    #     tests_dir="tests",
+    # )
+
 
     console.print("Evaluating candidate...")
     critic_result = evaluate_candidate(
@@ -395,14 +475,15 @@ def _run_llm_loop(
         tests_dir="tests",
     )
 
+    candidate_path = Path(config["output"]["artifacts_dir"]) / f"candidate_{run_id}.py"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(new_source)
+
     if not critic_result.accepted:
         console.print(f"[red]Candidate rejected:[/red] {critic_result.reason}")
         return
 
     # Write candidate to disk for inspection
-    candidate_path = Path(config["output"]["artifacts_dir"]) / f"candidate_{run_id}.py"
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    candidate_path.write_text(new_source)
     console.print(f"[green]Candidate passed static checks:[/green] {candidate_path}")
     console.print("[yellow]Metric gate: run manually or extend LLM loop to auto-accept[/yellow]")
 
@@ -412,7 +493,14 @@ _KNOWN_SUBCOMMANDS: frozenset[str] = frozenset(
 )
 
 
-def _inject_default_run_quick(default_command) -> None:
+def _load_repo_dotenv() -> None:
+    """Load repo-root ``.env`` into the process environment."""
+    try:
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    except:
+        load_dotenv(".env")
+
+def _inject_default_run_quick(default_command: str) -> None:
     argv = sys.argv
     if len(argv) <= 1:
         argv.insert(1, default_command)
@@ -426,6 +514,7 @@ def _inject_default_run_quick(default_command) -> None:
 
 
 def main() -> None:
+    _load_repo_dotenv()
     parser = argparse.ArgumentParser(
         prog="deribit-smile-agent",
         description="Deribit Volatility Smile Research Agent",
@@ -441,7 +530,7 @@ def main() -> None:
         "-c", "--config", default="configs/quick.yaml", help="Path to YAML config"
     )
     p_quick.add_argument(
-        "--llm", action="store_true", help="Run LLM proposer after simulation"
+        "--llm", action="store_true", default = True, help="Run LLM proposer after simulation"
     )
     p_quick.add_argument("--dry-run", action="store_true", help="Skip LLM call")
     p_train = sub.add_parser("run-train", help="Full walk-forward training study.")

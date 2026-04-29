@@ -8,20 +8,26 @@ data:
     - ETH
   cache_dir: /mnt/Data/.cache/data
   max_workers: 8
-  # Use all available data; test set is last 90 days
-  start_date: "2023-01-01"
-  end_date: null   # null = use all available data up to today
+  # Data slice used before train/val/test splitting.
+  # For a short experiment, move start_date closer to end_date (or set end_date explicitly).
+  # Example short slice: start_date: "2024-01-01", end_date: "2024-03-31"
+  start_date: "2025-01-01"
+  end_date: "2025-07-01"
+  # end_date: null   # null = include data up to latest available timestamp
 
 splits:
-  test_days: 90
-  train_window_days: 60
-  val_window_days: 14
-  gap_days: 3
-  step_days: 14
+  test_days: 90          # final holdout length (days), excluded from training
+  train_window_days: 60  # training span per walk-forward fold (days)
+  val_window_days: 14    # validation span per fold (days)
+  gap_days: 3            # gap between train and val to reduce leakage (days)
+  step_days: 14          # fold advance step (days); smaller = more folds/slower
+  # Short-period tip:
+  # - reduce test_days/train_window_days/val_window_days together
+  # - keep: train_window_days > val_window_days + gap_days
 
 horizons:
-  - 1
-  - 3
+  - 1  # evaluate PnL at +1 day after entry
+  - 3  # evaluate PnL at +3 days after entry
 
 strategies:
   - straddle
@@ -85,6 +91,7 @@ llm:
   max_tokens: 8192
   temperature: 0.2
   api_key_env: ANTHROPIC_API_KEY
+  max_llm_requests: 10
 
 output:
   reports_dir: reports

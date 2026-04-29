@@ -45,8 +45,9 @@ Current calculator config:
 1. Analyse the current performance metrics.
 2. Identify weaknesses in the current signal generation logic.
 3. Propose improvements to the feature engineering and signal generation.
-4. Rewrite `sandbox/calculator.py` with the improved logic.
-5. Optionally, provide updated calculator config parameters in YAML.
+4. It is not a last run. Make minimal change each step.
+5. Rewrite `sandbox/calculator.py` with the improved logic. Follow the style: no classes, no comments, bare code.
+6. Optionally, provide updated calculator config parameters in YAML.
 
 ## Hard Constraints
 
@@ -75,5 +76,6 @@ You MUST:
 
 Provide:
 1. A brief analysis of what you changed and why (2-3 sentences).
-2. The complete rewritten `calculator.py` in a Python code block.
+2. The amended rewritten `calculator.py` in a Python code block.
 3. Optionally, updated config overrides in a YAML code block.
+

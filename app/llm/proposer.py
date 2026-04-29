@@ -12,8 +12,8 @@ The proposer extracts:
 from __future__ import annotations
 
 import logging
+import os
 import re
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -32,18 +32,25 @@ class LLMProposer:
     """Send artifact → receive (new_source, new_config_overrides)."""
 
     def __init__(self, config: dict) -> None:
+        self.config = config
         llm_cfg = config.get("llm", {})
         self.provider: str = llm_cfg.get("provider", "anthropic")
-        self.model: str = llm_cfg.get("model", "claude-opus-4-5")
+        self.model: str = os.environ.get("CLAUDE_MODEL") or llm_cfg.get(
+            "model", "claude-opus-4-5"
+        )
         self.max_tokens: int = llm_cfg.get("max_tokens", 8192)
         self.temperature: float = llm_cfg.get("temperature", 0.2)
         self.api_key_env: str = llm_cfg.get("api_key_env", "ANTHROPIC_API_KEY")
+        max_requests = llm_cfg.get("max_llm_requests")
+        self.max_llm_requests: Optional[int] = (
+            int(max_requests) if max_requests is not None else None
+        )
 
     def propose(
         self,
         prompt: str,
         dry_run: bool = False,
-    ) -> tuple[Optional[str], Optional[dict]]:
+    ) -> tuple[Optional[str], Optional[dict], str]:
         """
         Send prompt to LLM. Returns (new_calculator_source, config_overrides).
 
@@ -51,7 +58,15 @@ class LLMProposer:
         """
         if dry_run:
             logger.info("Dry-run mode: skipping LLM call")
-            return None, None
+            return None, None, ""
+
+        if self._is_budget_exceeded():
+            logger.warning(
+                "LLM budget exhausted: %d/%d requests",
+                self._request_count(),
+                self.max_llm_requests,
+            )
+            return None, None, ""
 
         if self.provider == "anthropic":
             response_text = self._call_anthropic(prompt)
@@ -60,7 +75,22 @@ class LLMProposer:
         else:
             raise ValueError(f"Unknown LLM provider: {self.provider!r}")
 
+        self._increment_request_count()
         return _extract_from_response(response_text)
+
+    def _request_count(self) -> int:
+        llm_cfg = self.config.setdefault("llm", {})
+        value = llm_cfg.get("llm_requests_made", 0)
+        return int(value)
+
+    def _increment_request_count(self) -> None:
+        llm_cfg = self.config.setdefault("llm", {})
+        llm_cfg["llm_requests_made"] = self._request_count() + 1
+
+    def _is_budget_exceeded(self) -> bool:
+        if self.max_llm_requests is None:
+            return False
+        return self._request_count() >= self.max_llm_requests
 
     def _call_anthropic(self, prompt: str) -> str:
         try:
@@ -68,7 +98,6 @@ class LLMProposer:
         except ImportError as exc:
             raise ImportError("pip install anthropic") from exc
 
-        import os
         api_key = os.environ.get(self.api_key_env)
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
@@ -85,7 +114,6 @@ class LLMProposer:
         except ImportError as exc:
             raise ImportError("pip install openai") from exc
 
-        import os
         api_key = os.environ.get(self.api_key_env)
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
@@ -99,7 +127,7 @@ class LLMProposer:
 
 def _extract_from_response(
     text: str,
-) -> tuple[Optional[str], Optional[dict]]:
+) -> tuple[Optional[str], Optional[dict], str]:
     """Extract the first Python code block and optional YAML/JSON config block."""
     import yaml  # type: ignore[import]
 
@@ -117,4 +145,4 @@ def _extract_from_response(
         except Exception:
             pass
 
-    return new_source, new_config
+    return new_source, new_config, text

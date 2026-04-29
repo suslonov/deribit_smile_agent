@@ -132,10 +132,10 @@ def _top_trades(
 ) -> list[dict]:
     if results_df.empty or "pnl" not in results_df.columns:
         return []
-    valid = results_df[~results_df["is_nan"]].copy()
+    valid = results_df.loc[~results_df["is_nan"]]
     if valid.empty:
         return []
-    valid = valid.sort_values("pnl", ascending=ascending).head(n)
+    valid = valid.nsmallest(n, "pnl") if ascending else valid.nlargest(n, "pnl")
     rows = []
     for _, row in valid.iterrows():
         rows.append({

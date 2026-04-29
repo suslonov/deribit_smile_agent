@@ -108,7 +108,7 @@ def run_simulation(
 
     results: list[TradeResult] = []
     for pos_id, sig_row in enumerate(signals_df.itertuples(index=False)):
-        sig_series = pd.Series(sig_row._asdict())
+        sig_series = sig_row._asdict()
         signal_ts = sig_series["signal_ts"]
 
         # Find the open snapshot: first available at or after signal_ts
@@ -309,7 +309,7 @@ def _find_instrument(
 
 def _nan_result(
     pos_id: int,
-    sig_series: pd.Series,
+    sig_series: dict,
     signal_ts: pd.Timestamp,
     horizon: int,
     reason: str,

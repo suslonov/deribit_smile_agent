@@ -34,6 +34,21 @@ class CriticResult:
     metrics: Optional[dict] = None
 
 
+def llm_requests_made(config: dict) -> int:
+    """Return the total number of LLM requests made in the current run."""
+    llm_cfg = config.get("llm", {})
+    return int(llm_cfg.get("llm_requests_made", 0))
+
+
+def llm_budget_exceeded(config: dict) -> bool:
+    """True when configured max LLM requests is reached/exceeded."""
+    llm_cfg = config.get("llm", {})
+    max_requests = llm_cfg.get("max_llm_requests")
+    if max_requests is None:
+        return False
+    return llm_requests_made(config) >= int(max_requests)
+
+
 def evaluate_candidate(
     candidate_source: str,
     current_metrics: dict,
@@ -49,6 +64,16 @@ def evaluate_candidate(
     """
     tests_dir = Path(tests_dir)
     promotion = config.get("promotion", {})
+
+    if llm_budget_exceeded(config):
+        return CriticResult(
+            False,
+            (
+                "LLM request budget exceeded "
+                f"({llm_requests_made(config)}/{config.get('llm', {}).get('max_llm_requests')})"
+            ),
+            [],
+        )
 
     # 1. Syntax check
     try:

@@ -4,6 +4,7 @@ numpy
 pyarrow
 scikit-learn
 pyyaml
+python-dotenv
 rich
 pydantic
 jinja2
@@ -13,3 +14,4 @@ pytest
 black
 ruff
 mypy
+anthropic

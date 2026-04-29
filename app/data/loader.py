@@ -60,6 +60,10 @@ def load_date_range(
         if df.empty:
             logger.debug("No data for %s", day)
             continue
+        if assets:
+            df = df[df["asset"].isin(assets)]
+            if df.empty:
+                continue
         frames.append(df)
 
     if not frames:
@@ -67,10 +71,8 @@ def load_date_range(
         return pd.DataFrame(columns=OPTIONS_COLUMNS)
 
     combined = pd.concat(frames, ignore_index=True)
+    del frames
     combined.sort_values("timestamp", inplace=True, ignore_index=True)
-
-    if assets:
-        combined = combined[combined["asset"].isin(assets)].reset_index(drop=True)
 
     logger.info(
         "Loaded %d rows for %s – %s (assets=%s)",
