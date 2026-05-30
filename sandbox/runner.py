@@ -119,7 +119,12 @@ class SandboxRunner:
         """
         Run the calculator and return signals DataFrame.
 
-        Raises SandboxError on timeout, violations, or runtime errors.
+        On timeout, runtime errors, invalid return type, invalid columns, or
+        failed determinism check, returns an empty DataFrame with the contract
+        columns (see ``_empty_signals_dataframe``).
+
+        Raises SandboxError only for static violations before execution
+        (e.g. ``validate_source``) or module load failures.
         """
         if self._module is None:
             self.reload()
@@ -148,37 +153,60 @@ class SandboxRunner:
         t.join(timeout=self.timeout_seconds)
 
         if t.is_alive():
-            raise SandboxError(
-                f"Calculator timed out after {self.timeout_seconds}s"
+            logger.warning(
+                "Calculator timed out after %ss", self.timeout_seconds
             )
+            return _empty_signals_dataframe()
 
         elapsed = time.monotonic() - t0
         logger.debug("Calculator completed in %.2fs", elapsed)
 
         if exc_holder[0] is not None:
-            raise SandboxError(f"Calculator raised: {exc_holder[0]}") from exc_holder[0]
+            logger.warning("Calculator raised: %s", exc_holder[0])
+            return _empty_signals_dataframe()
 
         signals = result[0]
         if signals is None or not isinstance(signals, pd.DataFrame):
-            raise SandboxError("Calculator returned non-DataFrame result")
+            logger.warning("Calculator returned non-DataFrame result")
+            return _empty_signals_dataframe()
 
-        _validate_output(signals)
+        if not _validate_output(signals):
+            return _empty_signals_dataframe()
 
-        if self.verify_determinism:
-            _check_determinism(self._module, df_copy, cfg_copy, seed, signals)
+        if self.verify_determinism and not _check_determinism(
+            self._module, df_copy, cfg_copy, seed, signals
+        ):
+            return _empty_signals_dataframe()
 
         return signals
 
 
-def _validate_output(signals: pd.DataFrame) -> None:
-    """Check that the output DataFrame has the required columns."""
-    required = {
-        "signal_ts", "asset", "strategy", "direction", "expiry",
-        "strike", "strike_long", "strike_short", "option_type",
-    }
+_SIGNAL_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "signal_ts",
+    "asset",
+    "strategy",
+    "direction",
+    "expiry",
+    "strike",
+    "strike_long",
+    "strike_short",
+    "option_type",
+)
+
+
+def _empty_signals_dataframe() -> pd.DataFrame:
+    """Empty signals frame matching the calculator / simulator contract."""
+    return pd.DataFrame(columns=list(_SIGNAL_OUTPUT_COLUMNS))
+
+
+def _validate_output(signals: pd.DataFrame) -> bool:
+    """Return True if ``signals`` has all required columns."""
+    required = set(_SIGNAL_OUTPUT_COLUMNS)
     missing = required - set(signals.columns)
     if missing:
-        raise SandboxError(f"Calculator output missing columns: {missing}")
+        logger.warning("Calculator output missing columns: %s", missing)
+        return False
+    return True
 
 
 def _check_determinism(
@@ -187,15 +215,28 @@ def _check_determinism(
     cfg_copy: dict,
     seed: int,
     first_result: pd.DataFrame,
-) -> None:
+) -> bool:
     """Re-run with the same seed and compare output shape + values."""
-    second = module.compute(df_copy.copy(deep=True), copy.deepcopy(cfg_copy), seed)
-    if second.shape != first_result.shape:
-        raise SandboxError(
-            f"Non-deterministic output: shapes differ "
-            f"{first_result.shape} vs {second.shape}"
+    try:
+        second = module.compute(
+            df_copy.copy(deep=True), copy.deepcopy(cfg_copy), seed
         )
+    except Exception as exc:
+        logger.warning("Determinism re-run raised: %s", exc)
+        return False
+    if not isinstance(second, pd.DataFrame):
+        logger.warning("Determinism re-run returned non-DataFrame")
+        return False
+    if second.shape != first_result.shape:
+        logger.warning(
+            "Non-deterministic output: shapes differ %s vs %s",
+            first_result.shape,
+            second.shape,
+        )
+        return False
     try:
         pd.testing.assert_frame_equal(first_result, second, check_like=True)
     except AssertionError as exc:
-        raise SandboxError(f"Non-deterministic output: {exc}") from exc
+        logger.warning("Non-deterministic output: %s", exc)
+        return False
+    return True

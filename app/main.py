@@ -30,12 +30,12 @@ from app.llm.artifact_log import build_artifact, save_artifact
 from app.llm.critic import evaluate_candidate, llm_budget_exceeded, llm_requests_made
 from app.llm.prompts import render_rewrite_prompt
 from app.llm.proposer import LLMProposer
-from app.opt.search import walk_forward_search
+from app.opt.search import walk_forward_search_streaming
 from app.sim.metrics import compute_metrics
 from app.sim.pipeline import run_pipeline
 from app.sim.pricing import ExecConfig, FeeConfig
 from app.sim.simulator import run_simulation
-from app.split.time_split import get_test_data, make_splits
+from app.split.time_split import Split, get_fold_data, get_test_data, make_splits, make_splits_from_range
 from app.utils.clock import utc_now_str
 from app.utils.hashing import hash_dict
 from app.utils.io import load_yaml
@@ -250,40 +250,42 @@ def run_train(args) -> None:
     end = date.fromisoformat(end_str) if end_str else date.today()
 
     console.print(f"[bold]Run ID:[/bold] {run_id}")
-    console.print(f"[bold]Loading data:[/bold] {start} → {end}")
-
-    options_df = load_date_range(
-        root=data_cfg["path"],
-        start=start,
-        end=end,
-        assets=data_cfg.get("assets"),
-        cache_dir=data_cfg.get("cache_dir"),
-        max_workers=int(data_cfg.get("max_workers", 8)),
-    )
-    console.print(f"Loaded {len(options_df):,} rows")
-
     split_cfg = config["splits"]
-    folds, test_cutoff = make_splits(
-        df=options_df,
-        test_days=int(split_cfg["test_days"]),
-        train_window_days=int(split_cfg["train_window_days"]),
-        val_window_days=int(split_cfg["val_window_days"]),
-        gap_days=int(split_cfg["gap_days"]),
-        step_days=int(split_cfg["step_days"]),
+    test_days = int(split_cfg["test_days"])
+    train_window_days = int(split_cfg["train_window_days"])
+    val_window_days = int(split_cfg["val_window_days"])
+    gap_days = int(split_cfg["gap_days"])
+    step_days = int(split_cfg["step_days"])
+    folds, test_cutoff = make_splits_from_range(
+        global_start=pd.Timestamp(start, tz="UTC"),
+        global_end=pd.Timestamp(end, tz="UTC"),
+        test_days=test_days,
+        train_window_days=train_window_days,
+        val_window_days=val_window_days,
+        gap_days=gap_days,
+        step_days=step_days,
     )
     console.print(f"Created {len(folds)} folds, test cutoff: {test_cutoff.date()}")
-
-    train_df, _ = get_test_data(options_df, test_cutoff)
-    del options_df
     runner = _build_runner(config)
     runner.reload()
     exec_cfg, fee_cfg = _build_pricing(config)
     horizons = config.get("horizons", [1, 3])
 
     console.print("Running walk-forward search...")
-    fold_results = walk_forward_search(
+    def _load_fold_data(fold: Split) -> tuple[pd.DataFrame, pd.DataFrame]:
+        fold_window_df = load_date_range(
+            root=data_cfg["path"],
+            start=fold.train_start.date(),
+            end=fold.val_end.date(),
+            assets=data_cfg.get("assets"),
+            cache_dir=data_cfg.get("cache_dir"),
+            max_workers=int(data_cfg.get("max_workers", 8)),
+        )
+        return get_fold_data(fold_window_df, fold)
+
+    fold_results = walk_forward_search_streaming(
         folds=folds,
-        options_df=train_df,
+        load_fold_data=_load_fold_data,
         config=config,
         sandbox_runner=runner,
         exec_cfg=exec_cfg,
@@ -301,12 +303,17 @@ def run_train(args) -> None:
         for r in fold_results
     ]
 
-    # Aggregate val metrics for reporting
-    agg_signals = runner.run(train_df, config.get("calculator", {}))
-    agg_results = run_simulation(agg_signals, train_df, exec_cfg, fee_cfg, horizons)
-    metrics = compute_metrics(agg_results)
+    val_summaries = [r.val_metrics.get("summary", {}) for r in fold_results]
+    aggregate_keys = ("total_pnl", "avg_pnl", "median_pnl", "hit_rate", "sharpe_like", "trade_count", "nan_rate")
+    summary: dict[str, float] = {}
+    for key in aggregate_keys:
+        values = [float(m[key]) for m in val_summaries if key in m and m.get(key) is not None]
+        if not values:
+            continue
+        summary[key] = float(sum(values) / len(values))
+    metrics = {"summary": summary}
+    agg_results = pd.DataFrame()
     _print_metrics(metrics)
-    _print_pnl_chart(agg_results, title="Training Cumulative PnL")
 
     errors: list[str] = []
     artifact = build_artifact(
@@ -317,7 +324,7 @@ def run_train(args) -> None:
         metrics=metrics,
         fold_metrics=fold_metrics,
         results_df=agg_results,
-        options_df=train_df,
+        options_df=pd.DataFrame(),
         errors=errors,
         stage="train",
     )
@@ -325,7 +332,15 @@ def run_train(args) -> None:
     console.print(f"[green]Artifact saved:[/green] {out_path}")
 
     if llm:
-        _run_llm_loop(artifact, config, runner, train_df, exec_cfg, fee_cfg,
+        llm_slice = load_date_range(
+            root=data_cfg["path"],
+            start=start,
+            end=min(start + timedelta(days=max(train_window_days, 1) - 1), end),
+            assets=data_cfg.get("assets"),
+            cache_dir=data_cfg.get("cache_dir"),
+            max_workers=int(data_cfg.get("max_workers", 8)),
+        )
+        _run_llm_loop(artifact, config, runner, llm_slice, exec_cfg, fee_cfg,
                       horizons, dry_run, run_id)
 
 
@@ -551,7 +566,7 @@ def main() -> None:
     p_live.add_argument(
         "-c", "--config", default="configs/live_paper.yaml", help="Path to YAML config"
     )
-    _inject_default_run_quick("run-quick")
+    _inject_default_run_quick("run-train")
     args = parser.parse_args()
     if args.command == "run-quick":
         run_quick(args)

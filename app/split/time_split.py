@@ -50,9 +50,27 @@ def make_splits(
         raise ValueError("Cannot split an empty DataFrame")
 
     ts = df[timestamp_col]
-    global_start = ts.min()
-    global_end = ts.max()
+    return make_splits_from_range(
+        global_start=ts.min(),
+        global_end=ts.max(),
+        test_days=test_days,
+        train_window_days=train_window_days,
+        val_window_days=val_window_days,
+        gap_days=gap_days,
+        step_days=step_days,
+    )
 
+
+def make_splits_from_range(
+    global_start: pd.Timestamp,
+    global_end: pd.Timestamp,
+    test_days: int,
+    train_window_days: int,
+    val_window_days: int,
+    gap_days: int,
+    step_days: int,
+) -> tuple[list[Split], pd.Timestamp]:
+    """Build chronological walk-forward folds from time bounds."""
     test_cutoff = global_end - pd.Timedelta(days=test_days)
     train_end_ts = test_cutoff - pd.Timedelta(days=1)
 
@@ -65,14 +83,10 @@ def make_splits(
         fold_train_end = cursor + pd.Timedelta(days=train_window_days - 1)
         fold_val_start = fold_train_end + pd.Timedelta(days=gap_days + 1)
         fold_val_end = fold_val_start + pd.Timedelta(days=val_window_days - 1)
-
-        # Stop when the validation window would reach into the test set
         if fold_val_end >= test_cutoff:
             break
-        # Stop when training window exceeds available training data
         if fold_train_end > train_end_ts:
             break
-
         folds.append(Split(
             fold=fold_idx,
             train_start=fold_train_start,
@@ -80,7 +94,6 @@ def make_splits(
             val_start=fold_val_start,
             val_end=fold_val_end,
         ))
-
         cursor += pd.Timedelta(days=step_days)
         fold_idx += 1
 

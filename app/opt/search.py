@@ -15,7 +15,7 @@ import itertools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
@@ -90,6 +90,50 @@ def walk_forward_search(
     return results
 
 
+def walk_forward_search_streaming(
+    folds: list[Split],
+    load_fold_data: Callable[[Split], tuple[pd.DataFrame, pd.DataFrame]],
+    config: dict,
+    sandbox_runner: SandboxRunner,
+    exec_cfg: ExecConfig,
+    fee_cfg: FeeConfig,
+    horizons: list[int],
+) -> list[SearchResult]:
+    """Run walk-forward search by loading one fold at a time."""
+    search_space = config.get("optimization", {}).get("search_space", {})
+    objective = config.get("promotion", {}).get("objective", "sharpe")
+    results: list[SearchResult] = []
+
+    for fold in folds:
+        logger.info("Processing fold %d: %s – %s", fold.fold, fold.train_start, fold.val_end)
+        train_df, val_df = load_fold_data(fold)
+        if train_df.empty or val_df.empty:
+            logger.warning("Fold %d: empty train or val set, skipping", fold.fold)
+            continue
+
+        best_cfg, train_metrics = _grid_search(
+            train_df, config, sandbox_runner, exec_cfg, fee_cfg, horizons,
+            search_space, objective,
+        )
+        val_metrics = _evaluate(val_df, best_cfg, sandbox_runner, exec_cfg, fee_cfg, horizons)
+        results.append(SearchResult(
+            fold=fold.fold,
+            best_config=best_cfg,
+            train_metrics=train_metrics,
+            val_metrics=val_metrics,
+        ))
+        logger.info(
+            "Fold %d done. Train %s=%.4f | Val %s=%.4f",
+            fold.fold,
+            objective,
+            _get_obj(train_metrics, objective),
+            objective,
+            _get_obj(val_metrics, objective),
+        )
+
+    return results
+
+
 def _grid_search(
     train_df: pd.DataFrame,
     config: dict,
@@ -113,6 +157,8 @@ def _grid_search(
     best_metrics: dict = {}
 
     for combo in itertools.product(*values):
+        print(combo)
+        print("--------------------------------")
         candidate_calc = copy.deepcopy(base_calc_cfg)
         for k, v in zip(keys, combo):
             candidate_calc[k] = v
@@ -127,6 +173,9 @@ def _grid_search(
         except Exception as exc:
             logger.debug("Grid combo %s failed: %s", combo, exc)
             continue
+
+        print(metrics)
+        print("--------------------------------")
 
         obj_val = _get_obj(metrics, objective)
         if obj_val > best_obj:
